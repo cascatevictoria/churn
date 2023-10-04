@@ -1,0 +1,751 @@
+---
+title: "Project 1. Prediction of churn based on the segments & retention measures"
+author: "Victoria Bolotova"
+date: "23 10 2021"
+output: 
+    html_document:
+      theme: cosmo
+      code_folding: show
+      toc: true
+      toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Preparation of the data for analysis & EDA
+
+## Downloading libraries
+
+```{r}
+library(readr)
+library(ggplot2)
+library(psych)
+library(plyr)
+library(tidyverse)
+library(purrr)
+library(cluster)
+library(rsample)
+library(MASS)
+library(descr)
+library(caret)
+```
+
+
+## Read the data
+
+```{r}
+bank_df <- read_csv("bank_churners.csv")
+```
+## EDA
+
+How many columns and rows in the data?
+
+```{r}
+dim(bank_df)
+```
+
+So, the data set contains 10127 customers and 20 features on each client. Next, we should look at column names in the data set. 
+
+```{r}
+colnames(bank_df)
+```
+*NB! In the variable still_customer the 'yes' means that the corresponding customer left the company, so the 'no' indicates that the corresponding customer stayed with us.* 
+
+### Statistics 
+
+```{r}
+describe(bank_df)
+```
+
+From the statistics above, we can see the following:
+
+* The median (and mean) tenure (period of relationship with bank in months) equals to 36 months or 3 years (the variable is `months_on_book`)
+
+* The mean number of products held by customers is 4.
+
+* The mean number of month customers are inactive during 12 months is 2.34
+
+* The mean number of contacts in the last 12 months is 2.46
+
+* The mean credit limit is 8631.95, while median is 4549.00, that indicates skewness of this variable.
+
+* The mean total revolving balance on the credit card is 1163
+
+* The mean change in transaction amount (Q4 over Q1) is 0.76
+
+* The mean total transaction amount (Last 12 months) is 4404
+
+* The mean total transaction count (Last 12 months) is 65
+
+## How big is the problem in general?
+
+```{r}
+table(bank_df$still_customer)
+```
+
+Most people are still our customers. 8500 customers were retained (did not churn) and 1627 customers churned. So, it would be fabulous to look at the bar plot! 
+
+`still_customer` should be transformed into factor. 
+
+```{r}
+bank_df$still_customer <- factor(bank_df$still_customer)
+
+class(bank_df$still_customer)
+```
+
+
+```{r}
+df_for_barplot  <- bank_df %>% 
+  group_by(still_customer) %>% 
+ summarize(count = n()) %>%  
+ mutate(percentage = count/sum(count)) 
+```
+
+```{r}
+ggplot(df_for_barplot, aes(still_customer, percentage, fill = still_customer)) + 
+  geom_bar(stat='identity', alpha = 0.7) + 
+  geom_text(aes(label=scales::percent(percentage)), position = position_stack(vjust = .5)) +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(subtitle="Barplot", 
+       y="Percentage", 
+       x="Still our customer", 
+       title="How big is the problem of churn?") +
+  scale_fill_manual("Still customer",values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+* 16% of customers left the business 
+* 84% of customers stayed with the business
+
+Hence, the problem of customers' churn is not tremendous, but still our company are loosing money due to churners. 
+
+## Clean the data from NAs
+
+```{r}
+nrow(bank_df) # check initial number of rows
+bank_df <- na.omit(bank_df)
+nrow(bank_df) # check resulting number of rows after na.omit()
+```
+
+Well, actually there are no NAs in the data.
+
+
+However, there are three columns (`education_level`, `marital_status`, `income_category`) that often contain "unknown" values. If we delete the rows where there is at least one "unknown" value, we will run out of 3046 customers - it does not sound good for us. To make meaningful decision, let's explore whether these variables play a role in a customer churn and then look at all other variables. 
+
+## Exploration of churn's covariates
+
+### `Education level`
+
+```{r}
+ggplot(bank_df, aes(x = education_level, fill =  still_customer)) +
+  geom_bar(position = "dodge", alpha = 0.7) + labs(subtitle="Barplot", 
+       y="Number of customers", 
+       x="Customers' education level", 
+       title="Does the decision to churn depend on the education level?") +
+  scale_fill_manual("Still customer",values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+# scale_fill_manual is used to make graphs intuitively easy to comprehend (red is smth bad, in our case - customers who churned, green is smth good - customers who are still with the business)
+```
+
+From the graph, we can conclude that education level of our customers does not play a role in their decision to live the business. To be sure, I have checked logistic regression with all variables and have come to the conclusion that indeed education level does not explain churn. 
+Therefore, we are not going to include this variable in our logistic regression.
+
+### `Marital status`
+
+```{r}
+bank_df$marital_status <- factor(bank_df$marital_status)
+class(bank_df$marital_status)
+```
+
+```{r}
+ggplot(bank_df, aes(x = marital_status, fill =  still_customer)) +
+  geom_bar(position = "dodge", alpha = 0.7) + labs(subtitle="Barplot", 
+       y="Number of customers", 
+       x="Customers' marital status", 
+       title="Does the decision to churn depend on the Marital Status?") +
+  scale_fill_manual("Still customer",values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+Distribution of churn seems to be dependent on the marital status of our customers. Married people are more frequently decide to stay with the company, compared to single ones. For divorced people it is difficult to say from the glance. Logistic regression have shown that one category `Married` is significant, so we should not exclude this column.
+
+
+### `Income category`
+
+```{r}
+bank_df$income_category <- factor(bank_df$income_category)
+class(bank_df$income_category)
+```
+
+```{r}
+ggplot(bank_df, aes(x = income_category, fill =  still_customer)) +
+  geom_bar(position = "dodge", alpha = 0.7) + labs(subtitle="Barplot", 
+       y="Number of customers", 
+       x="Customers' income category", 
+       title="Does the decision to churn depend on the Annual Income Category?") +
+  scale_fill_manual("Still customer",values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+From the graph, we can see only a small difference in churn across different categories, although logistic regression reveals statistical significance of all levels of income, compared to dummy category - $120K +. 
+
+Let's run out of only one column `education_level`
+
+```{r}
+bank_df <- bank_df %>% dplyr::select(- education_level)
+ncol(bank_df)
+```
+Correct! Let's proceed to the next variables, where there are no missing values. 
+
+### `Age`
+
+```{r}
+ggplot(bank_df, aes(x = customer_age, fill = still_customer)) +
+      geom_histogram(aes(y=..density..), 
+                     position = "identity", 
+                     alpha = 0.7,
+                     bins = 20) +
+  facet_wrap(~ still_customer) +
+  labs(title = "Distribution of the churn depending on the age", x = "Customers' age", y = 'Density') + 
+  scale_fill_manual("Still customer",values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+Age does not play a role in a customers' churn as we observe approximately complete intersection.
+
+```{r}
+bank_df <- bank_df %>%
+  dplyr::select(-customer_age)
+```
+
+
+### `Gender`
+
+This variable should be transformed into factor.
+
+```{r}
+bank_df$gender <- factor(bank_df$gender)
+class(bank_df$gender)
+```
+
+
+```{r}
+ggplot(bank_df, aes(x = gender, fill =  still_customer)) +
+  geom_bar(position = "dodge", alpha = 0.7) +
+   labs(title = "The churn count by gender", x = "Customers' gender", y = "Number of customers") + 
+   scale_fill_manual("Still customer", values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+The difference is not huge, but it would be better to include `gender` in the logistic regression to predict churn. 
+
+### `Dependent_count`
+
+This variable should be transformed into factor.
+
+```{r}
+bank_df$dependent_count <- factor(bank_df$dependent_count)
+class(bank_df$dependent_count)
+```
+```{r}
+ggplot(bank_df, aes(x = dependent_count, fill =  still_customer)) +
+  geom_bar(position = "dodge", alpha = 0.7) +
+   labs(title = "The churn count by the number of dependents", x = "Customers' number of dependents", y = "Number of customers") + 
+   scale_fill_manual("Still customer", values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+* Here there is a difference in a clients' decision to churn depending on the number of children. 
+
+* For example, there are the same number of clients with the number of dependents two and three who stayed with the business (green columns), but there are more churners with three dependents, compared to those who have two children. 
+
+* Furthermore, if we compare customers with one dependent and customers with four dependents, we can clearly observe that there are the same number of churners among these two categories, but there are more customers who stayed with the business among people with one dependent, compared to those with four dependents. 
+
+* The variable `dependent_count` should be included in our predictive model. 
+
+### `Card category`
+
+```{r}
+bank_df$card_category <- factor(bank_df$card_category)
+class(bank_df$card_category)
+```
+
+```{r}
+ggplot(bank_df, aes(x = card_category, fill =  still_customer)) +
+  geom_bar(position = "dodge", alpha = 0.7) +
+   labs(title = "The churn count by the card category", x = "Types of card category", y = "Number of customers") + 
+   scale_fill_manual("Still customer", values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+Most customers have blue card (~ 90%). Silver card is the second by popularity. Gold and Platinum cards are very rarely chosen by the clients. 
+
+### `Months on book`
+
+This variable denotes tenure.
+
+```{r}
+ggplot(bank_df, aes(x = still_customer, y = months_on_book, fill = still_customer)) +
+         geom_boxplot(alpha = 0.7) +
+  labs(x = "Still customer",
+       y = "Tenure" ,
+       title = "Tenure vs Churn") +
+   scale_fill_manual("Still customer", values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()  +
+  theme(legend.position = "none") 
+
+```
+
+Both graphs are very similar to each other. Due to different sample sizes, category of retained customers represents clients that have 'broader' tenure from small tenure to long one. Let try this variable in predictive model.  
+
+### `Total_relationship_count`
+
+```{r}
+ggplot(bank_df, aes(x = as.factor(total_relationship_count), fill =  still_customer)) +
+  geom_bar(position = "dodge",  alpha = 0.7) +
+   labs(title = "The churn count by the quantity of products held by the customer", x = "Quantity of products held by the customer", y = "Number of customers") + 
+   scale_fill_manual("Still customer", values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+The graph above reveals important insight about the business. Clients with bigger quantity of business' products (3-6), tend to churn less, compared to those with smaller quantity of business' products (1-2). Therefore, the company should come up with the marketing campaign that would make customers with only 1-2 products upgrade to bigger quantity of our business' products. Let's include this variable in the predictive model. 
+
+### `Months_inactive_12_mon`
+
+```{r}
+ggplot(bank_df, aes(x = as.factor(months_inactive_12_mon), fill =  still_customer)) +
+  geom_bar(position = "dodge",  alpha = 0.7) +
+   labs(title = "The churn count by the number of months inactive in the last 12 months", x = "Number of months inactive in the last 12 months", y = "Number of customers") + 
+   scale_fill_manual("Still customer", values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+Well, most customers became churners at the second and third inactive month. Much fewer customers left the business at the first month. As for more months inactive (4-6), we have too small quantity of observations. This variable should be included in the logistic model.
+
+### `Contacts_count_12_mon`
+
+```{r}
+ggplot(bank_df, aes(x = as.factor(contacts_count_12_mon), fill =  still_customer)) +
+  geom_bar(position = "dodge",  alpha = 0.7) +
+   labs(title = "The churn count by the number of clients' contacts with us in the last 12 months", x = "Number of clients' contacts with us in the last 12 months", y = "Number of customers") + 
+   scale_fill_manual("Still customer", values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+One more business insight is that the more times customers contact with us, the more likely they churn. Most customers contact with us 2 and 3 times. Among small percentage of clients who contacted six times with us, absolutely all churned. Hence, the company should understand the reason behind it: whether customers churned due to troubles with the service (even when company can help to cope with them) or they churned due to problematic communication with the people inside the company to whom they call to solve the problem. 
+
+### `Credit_limit`
+
+```{r}
+ggplot(bank_df, aes(x = still_customer, y = credit_limit, fill = still_customer)) +
+         geom_boxplot(alpha = 0.7) +
+  labs(x = "Still customer",
+       y = "Customers' credit limit" ,
+       title = "Customers' credit limit vs Churn") +
+   scale_fill_manual("Still customer", values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()  +
+  theme(legend.position = "none") 
+
+```
+
+The median of customers' credit limit is slightly higher for the retained customers, compared to churners. Moreover, there are much more outliers (customers who have very high creadit limits) in the group of clients who were retained, compared to churners. 
+
+```{r}
+ggplot(bank_df, aes(x = credit_limit, fill = still_customer)) +
+      geom_histogram(aes(y=..density..), 
+                     position = "identity", 
+                     alpha = 0.7,
+                     bins = 20) +
+  facet_wrap(~ still_customer) +
+  labs(title = "Distribution of the customers' credit limit depending on the churn", x = "Customers' credit limit", y = 'Density') + 
+  scale_fill_manual("Still customer",values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+Most churners had credit limit less than 5000. As for retained clients, they are more prone to have bigger credit limit, compared to churners. This variable is going to be in the logistic model. 
+
+### `Total_revolving_bal`
+
+```{r}
+ggplot(bank_df, aes(x = total_revolving_bal, fill = still_customer)) +
+      geom_histogram(aes(y=..density..), 
+                     position = "identity", 
+                     alpha = 0.7,
+                     bins = 20) +
+  facet_wrap(~ still_customer) +
+  labs(title = "Total Revolving Balance on the Credit Card vs churn", x = "Total Revolving Balance on the Credit Card", y = 'Density') + 
+  scale_fill_manual("Still customer",values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+From the histograms above, we can conclude that most churners had zero Total Revolving Balance on their credit cards - what we cannot say about non-churners. However, there is a significant number of churners who had very high total revolving balance on their credit cards. Meanwhile, retained customers tend to have total revolving balance from 600 to 2600, but some of them have zero Total Revolving Balance on their credit cards. This variable is needed for futher analysis. 
+
+
+### `Total_trans_amt`
+
+```{r}
+ggplot(bank_df, aes(x = total_trans_amt, fill = still_customer)) +
+      geom_histogram(aes(y=..density..), 
+                     position = "identity", 
+                     alpha = 0.7,
+                     bins = 20) +
+  facet_wrap(~ still_customer) +
+  labs(title = "Customers' total transaction amount in last 12 months vs churn", x = "Total transaction amount in last 12 months", y = 'Density') + 
+  scale_fill_manual("Still customer",values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+Churners' total transaction amount in last 12 months was smaller, compared to retained clients. Churners were transferring little money - 10000 is the maximum. Most churners were transferring up to 4000. 
+
+### `Total_trans_ct`
+
+Total Transaction Count (Last 12 months)
+
+
+```{r}
+ggplot(bank_df, aes(x = still_customer, y = total_trans_ct, fill = still_customer)) +
+         geom_boxplot(alpha = 0.7) +
+  labs(x = "Still customer",
+       y = "Customers' Total Transaction Count" ,
+       title = "Customers' Total Transaction Count vs Churn") +
+   scale_fill_manual("Still customer", values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()  +
+  theme(legend.position = "none") 
+```
+
+Churners did much less transactions, compared to non-churners. 
+
+* 50% of churners did less than approximately 40 transactions.
+
+* 50% of retained customers did less than 70 transactions. 
+
+This variable should be included in the model.
+
+
+## Scaling continious variables for segmentation 
+
+Now we should choose suitable variables for segmentation with k-means. 
+
+K-means can handle only continuous variables, so I have decided to use behavioral based segmentation.
+
+The features for clustering our customers are the following:
+
+* `months_on_book`, that denotes tenure
+* `total_relationship_count`, that means total quantity of products held by the customer
+* `months_inactive_12_mon`, that denotes the number of months inactive in the last 12 months
+* `contacts_count_12_mon`, that denotes the number of clients' contacts with us in the last 12 months
+* `credit_limit`
+* `total_revolving_bal`, that means Total Revolving Balance on the Credit Card
+* `total_trans_amt`, that denotes Total Transaction Amount in the last 12 months
+* `total_trans_ct`, that denotes Total Transaction Count in the last 12 months 
+
+Let's create new data set only with necessary variables for segmentation:
+
+```{r}
+df_for_k_means <- bank_df %>% dplyr::select(months_on_book, total_relationship_count, months_inactive_12_mon, contacts_count_12_mon, credit_limit, total_revolving_bal, total_trans_amt, total_trans_ct)
+```
+
+Now we should make variables range from 0 to 1.
+
+```{r}
+range01 <- function(x){(x-min(x))/(max(x)-min(x))}
+df_scaled <- colwise(range01)(df_for_k_means)
+
+head(df_scaled)
+```
+
+# Segmentation of customers with K-means
+
+To decide what number of clusters is the most meaningful, let's try different approaches. 
+
+## Checking different methods to choose the best number of clusters
+
+### Elbow plot
+
+**Creation of elbow_df**
+
+```{r}
+total_withinss <- map_dbl(1:10, function(k){
+  model <- kmeans(x = df_scaled, centers = k)
+  model$tot.withinss
+})
+
+elbow_df <- data.frame(
+  k = 1:10,
+  total_withinss = total_withinss
+) #code from DataCamp's chapter on Cluster Analysis
+```
+
+**Visualization**
+
+```{r}
+ggplot(elbow_df, aes(x = k, y = total_withinss)) + 
+  geom_line() + 
+  scale_x_continuous(breaks = 1:10) +
+  labs(title = "Elbow plot", x = "Number of clusters K", y = "Total Within Sum of Square") +
+  theme_bw()
+```
+
+What we are looking for is the point at which the curve beings to flatten out, referred to as the elbow. 
+
+In this case we can see that there is a steep drop going from a k of 1 to 3 and then a leveling off when moving between a k of 3 and 4 and onward.
+
+But 6 seems to be also suitable as the number of clusters. 
+
+Let's proceed to the next method to become more sure in our decision.
+
+### Silhouette analysis method
+
+Calculate highest average silhouette width across different values of k
+
+```{r}
+sil_width <- map_dbl(2:10, function(k){
+  model <- pam(x = df_scaled, k = k)
+  model$silinfo$avg.width
+})
+
+sil_df <- data.frame(
+  k = 2:10,
+  sil_width = sil_width
+) #code from DataCamp's chapter on Cluster Analysis
+```
+
+```{r}
+ggplot(sil_df, aes(x = k, y = sil_width)) +
+  geom_line() +
+  scale_x_continuous(breaks = 2:10) + 
+  labs(title = "Plot Average Silhouette Width", x = "Number of clusters K", y = "Average Silhouette Width") +
+  theme_bw()
+```
+
+Here we should look for a bigger number on y-axis, as values close to 1 mean that observations well matched to the corresponding clusters. 
+
+Well, if we combine the results that we got above, using elbow method and Silhouette analysis method, we would probably use 3 as a k.
+
+* k = 3 results in 3000 Total Within Sum of Square 
+
+* k = 3 results in 0.195 Average Silhouette Width
+
+## K-means 
+
+**Assigning clusters**
+
+```{r}
+set.seed(99)
+model <- kmeans(df_scaled, centers = 3, nstart = 25)
+```
+
+**Checking the size of clusters**
+
+```{r}
+model$size
+```
+
+**Creating new column `cluster` within df_scaled and save result into new df**
+```{r}
+bank_df_clustered <- mutate(bank_df, segment = model$cluster)
+```
+
+
+## Exploration of each segment
+
+**Mean values across clusters**
+
+```{r}
+round(aggregate(df_for_k_means, by=list(cluster = model$cluster), mean),2)
+```
+
+`Months on book`, denoting tenure, do not differ across segments. It was expected because in the EDA part kurtosis and skew indicated normal distribution. Moreover, boxplot above has shown that churn does not really depend on the tenure. But I have included this variable in the k-model as for me it seems important behavioral-based feature. Probably, I could skip it. `Months inactive` also does not vary across segments, but this is more meaningful to include in the interpretation of the segments as the max value for this variable is 6.
+
+Description of the segments: 
+
+* **1st segment:** holds 5 our products, becomes inactive as an average, contacts us as an average, credit limit smaller than average, total revolving balance is the highest, transfer less than the average and than the 2nd segment in terms of both amount and frequency
+
+* **2nd segment:** holds approximately 4 our products, becomes inactive for a longer time, contacts us often, credit limit is the smallest, very small total revolving balance, transfer less than the average but more than 1st in terms of both amount and frequency 
+
+* **3rd segment:** holds 2 our products, becomes inactive for a shorter time than average, rarely contacts us, credit limit is high, total revolving balance is higher than average, transfer much higher than the average in terms of both amount and frequency 
+
+Segment should be transformed in factor variable.
+
+```{r}
+bank_df_clustered$segment <- factor(bank_df_clustered$segment)
+class(bank_df_clustered$segment)
+```
+
+```{r}
+ggplot(bank_df_clustered, aes(x = segment, fill =  still_customer)) +
+  geom_bar(position = "dodge", alpha = 0.7) +
+   labs(title = "The churn count by segment", x = "Customers' segment", y = "Number of customers") + 
+   scale_fill_manual("Still customer", values = c('#C0F1A2', '#F1948B')) +
+  theme_bw()
+```
+
+Churn is much more likely in the second segment, among customers who have **4** our products, become **inactive for a long period of time**, **contact us often**, whose **credit limit is the smallest** among all segments as well as **total revolving balance** (**in 6 times smaller than the average**) and who **transfer less than the average** but more than 1st in terms of both amount and frequency. 
+
+# Churn prediction 
+
+As we found out churn is the most widespread in the second segment, so now we should be focused on the representatives of the second segment.
+
+**Create data set with customers only from the second segment**
+
+```{r}
+df_2nd_segment <- bank_df_clustered %>%
+  filter(segment == 2)
+nrow(df_2nd_segment)
+```
+Correct! Exactly 3231 clients are in the second segment as we found out above with the `size()`. 
+
+```{r}
+df_2nd_segment$still_customer <- ifelse(df_2nd_segment$still_customer == "yes", 1, 0)
+```
+
+* yes means that customer is a churner => **1 indicates the churner**
+* no means that customer is still with the business => **0 indicates the non-churner**
+
+
+## Split the data into 80% training and 20% testing
+
+```{r}
+set.seed(42)
+df_split <- initial_split(df_2nd_segment, prop = .8)
+train_df <- training(df_split)
+test_df <- testing(df_split)
+```
+
+
+## Logistic regression 
+
+```{r}
+logitModelFull <- glm(still_customer ~ gender + dependent_count + marital_status + income_category + months_on_book + total_relationship_count + months_inactive_12_mon + contacts_count_12_mon + credit_limit + total_revolving_bal + total_amt_chng_q4_q1 + total_trans_amt + total_trans_ct, data = train_df, family = binomial)
+```
+
+When building a model we have to figure out which variables to include. One useful tool is the function stepAIC() of the MASS package. 
+
+The best model is the model that I got using the `stepAIC()` as this function helps to select variables that possess significant explanatory power via multiple iterations. 
+
+```{r}
+logitModelNew <- stepAIC(logitModelFull, trace = 0)
+summary(logitModelNew)
+```
+
+## Evaluation of the best model
+
+Let's refer to statistics: 
+
+```{r}
+LogRegR2(logitModelNew)
+```
+
+All statistics reveal that our model is very good at explaining churn. 
+
+## Prediction of churn
+
+```{r}
+predictions <- predict(logitModelNew, newdata = test_df, type = "response")
+#printing the predictions
+head(round(predictions,),10)
+```
+
+```{r}
+predictions <- as.data.frame(predictions)
+predictions$p.class <- round(predictions$predictions, 0)
+head(predictions)
+```
+
+## Confusion matrix and statistics
+
+```{r}
+predictions$p.class <- if_else(predictions$predictions > 0.5,1,0)
+p.class = factor(predictions$p.class,levels = c(1,0))
+actual.factor = factor(test_df$still_customer, levels = c(1,0))
+confusionMatrix(p.class, actual.factor) #code from the lab's script
+```
+* Accuracy of the model that predict churn for clients in the second segment equals to 85%, meaning that in 86% of cases the model will correctly predict whether a customer is going to churn or not. Of course, this is only slightly higher than the 84% that we would get just by assuming that a customer would always stay with the business, but it is still better.
+
+
+## Identification of the most powerful churn predictors 
+
+From the summary of logistic regression above, the most powerful churn predictors are the following variables:
+
+* Gender
+* Income category
+* The quantity of products held by a customer 
+* Number of months inactive in the last 12 months
+* Number of contacts in the last 12 months
+* Total Revolving Balance on the Credit Card
+* Change in Transaction Amount (Q4 over Q1)
+* Total Transaction Amount (Last 12 months)
+* Total Transaction Count (Last 12 months)
+
+
+## Interpretation of the coefficients 
+
+**Transformation to odds**
+
+```{r}
+coefsExp <- coef(logitModelNew) %>% exp() %>% round(2)
+coefsExp
+```
+Interpretation of only significant features in accordance with logitModelNew:
+
+* Being a male decreases the odds of leaving the company by a factor of 0.25. That being said, the odds for decision to churn are 25% smaller for men, compared to women, holding everything else constant. 
+
+* Having income_category 60k - 80k decreases the odds of leaving the company by a factor of 0.50. Hence, odds for decision to churn are 50% smaller for customers in income category 60k - 80k, compared to customers whose income category is +120K, holding everything else constant. 
+
+* Having income_category less than 40K  decreases the odds of leaving the company by a factor of 0.23. Hence, odds for decision to churn are 23% smaller for customers in income category less than 40K , compared to customers whose income category is +120K, holding everything else constant. 
+
+* Having income_category 40K - 60K decreases the odds of leaving the company by a factor of 0.29. Hence, odds for decision to churn are 29% smaller for customers in income category 40K - 60K, compared to customers whose income category is +120K, holding everything else constant. 
+
+* Having income_category 80K - 120K decreases the odds of leaving the company by a factor of 0.57. Hence, odds for decision to churn are 57% smaller for customers in income category 40K - 60K, compared to customers whose income category is +120K, holding everything else constant. 
+
+* Increasing the tenure (`months_on_book`) by 1 unit (1 month) will result in a 98% decrease in odds of churn, holding everything else constant. 
+
+* Increasing months inactive by 1 unit (1 month) will result in a 85% increase in odds of churn, holding everything else constant. 
+
+* Increasing the number of products held by a customer will result in a 68% decrease in odds of churn, holding everything else constant. 
+
+* Increasing the number of contacts will result in a 66% increase in odds of churn, holding everything else constant. 
+
+* Increasing the customers' total transaction count will result in a 86% decrease in odds of churn, holding everything else constant. 
+
+* Increasing the change in transaction amount (Q4 over Q1) will result in a 10% decrease in odds of churn, holding everything else constant. 
+
+
+# Churn-prevention recommendations for 2nd segment
+
+
+* As women are more likely to churn compared to men, I would recommend to run a small focus group on women who already have churned to find out what they did not like about our bank and what factors drove their decision to churn. In order for the women to agree, it is necessary to offer them a monetary compensation for their help. After we get qualitative information about drawbacks of the business, we should ask a larger sample to validate this data.
+
+To make this data quantitative, we should ask the large quantity of churned clients:
+
+Rank the following characteristics of the bank from most important to least important for you to stay with the bank: some predefined features about 4-10
+
+* The same procedure can be done for people with different income categories
+
+* Target people whose tenure is small
+
+* Try to reactivate customers who do not show activity for more than 1 month. 
+
+Send them an email with some news about the company's life or with the link to bank's social networks or with product roadmap so customers can see what new features are coming soon
+
+Offer an assistance to customers in order to help them figure out how the bank works, how to use the website or the app of the bank, proactively guide them to make sure they’re getting the most from their subscription
+ 
+* Inspire customers to have more quantity of our business' products 
+
+Run marketing campaign that would make customers with only 1-2 products upgrade to bigger quantity of our business’ products
+
+Spotlight the customers who just join new product in the frontpage of the website 
+
+Tell about the advantages of business' products in the social media - Instagram, for example. And tell about bonuses to have all six products of the company 
+
+Come up with some nice privilege for those with the 6 products, for example - customers who possess all six products will get an inside information about new features that are coming soon, etc.
+
+* Find out why the bigger number of contacts lead to higher churn. The best way is to run a focus group on people who churned and had high number of contacts to get ideas and then validate this data on larger sample. 
+
+* Make customers transfer money more frequently 
+
+Guide customers who transfer rarely to make sure they do not face any troubles with this operation
+
+Be creative in offering customers advantages to transfer money via the bank, for example, promote the idea that money exchange from hand to hand is very dangerous in covid's time. 
